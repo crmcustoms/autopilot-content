@@ -249,16 +249,20 @@ def check_and_send_posts(token, notion_token, db_ids, admin_chat_id):
 # ─── CHECK BLOG ARTICLES ────────────────────────────────────────────────────
 
 def check_and_send_blog_articles(token, blog_token, blog_db, admin_chat_id):
-    """Шукає статті зі статусом «Готово до публікації» і надсилає на схвалення."""
+    """Шукає статті зі статусом «Готово до публікації» де дата публікації <= сьогодні."""
     if not blog_token or not blog_db:
         return 0
 
+    from datetime import date as _date
+    today = str(_date.today())
+
+    # Шукаємо статті готові до публікації з датою <= сьогодні
     pages, err = notion_query(
         blog_token, blog_db,
-        filter_body={
-            "property": "Status",
-            "multi_select": {"contains": "Готово до публікації"}
-        }
+        filter_body={"and": [
+            {"property": "Status", "multi_select": {"contains": "Готово до публікації"}},
+            {"property": "Дата публікації", "date": {"on_or_before": today}},
+        ]}
     )
     if err:
         print(f"[blog] Notion error: {err}")
@@ -270,10 +274,6 @@ def check_and_send_blog_articles(token, blog_token, blog_db, admin_chat_id):
         if count >= 1:
             break
         article = parse_blog(page)
-        with _lock:
-            if article["id"] in _blog_sent_for_review:
-                continue
-            _blog_sent_for_review.add(article["id"])
 
         slug = article["slug"] or ""
         site_url = f"https://crmcustoms.com/uk/blog/{slug}/" if slug else "(slug не заповнено)"
@@ -290,9 +290,10 @@ def check_and_send_blog_articles(token, blog_token, blog_db, admin_chat_id):
         result, err = send(token, admin_chat_id, msg, keyboard=blog_keyboard(article["id"]))
         if err:
             print(f"[blog] send error: {err}")
-            with _lock:
-                _blog_sent_for_review.discard(article["id"])
         else:
+            # Змінюємо статус на «На розгляді» — при рестарті бот не пришле знову
+            notion_req(blog_token, "PATCH", f"/pages/{article['id']}",
+                {"properties": {"Status": {"multi_select": [{"name": "На розгляді"}]}}})
             count += 1
 
     if count:
@@ -453,12 +454,12 @@ def handle_callback(token, notion_token, db_ids, blog_token, blog_db,
 
     elif data.startswith("brej:"):
         page_id = data[5:]
+        # Повертаємо «Готово до публікації» — бот пришле наступного дня
         notion_req(blog_token, "PATCH", f"/pages/{page_id}", {
-            "properties": {"Status": {"multi_select": [{"name": "В роботі"}]}}
+            "properties": {"Status": {"multi_select": [{"name": "Готово до публікації"}]}}
         })
         edit_msg(token, chat_id, msg_id,
-            "❌ Статтю повернуто в роботу (статус «В роботі»).\n"
-            "Відредагуй у Notion і зміни статус на «Готово до публікації» — я пришлю знову.")
+            "⏸ Залишено. Стаття повернеться на схвалення наступного дня.")
         with _lock:
             _blog_sent_for_review.discard(page_id)
 
