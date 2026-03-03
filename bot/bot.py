@@ -23,12 +23,17 @@ if ROOT not in sys.path:
 
 def load_env():
     env = {}
-    with open(os.path.join(ROOT, ".env"), "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                k, v = line.split("=", 1)
-                env[k.strip()] = v.strip().strip('"').strip("'")
+    env_path = os.path.join(ROOT, ".env")
+    if os.path.exists(env_path):
+        with open(env_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, v = line.split("=", 1)
+                    env[k.strip()] = v.strip().strip('"').strip("'")
+    else:
+        # Docker/Coolify — читаємо зі змінних середовища
+        env = dict(os.environ)
     return env
 
 def load_db_ids():
