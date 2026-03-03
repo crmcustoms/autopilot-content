@@ -454,12 +454,18 @@ def handle_callback(token, notion_token, db_ids, blog_token, blog_db,
 
     elif data.startswith("brej:"):
         page_id = data[5:]
-        # Повертаємо «Готово до публікації» — бот пришле наступного дня
+        from datetime import date as _date, timedelta as _td
+        tomorrow = str(_date.today() + _td(days=1))
+        # Повертаємо «Готово до публікації» + переносимо дату на завтра
+        # (щоб бот не прислав знову через 5 хв у той же день)
         notion_req(blog_token, "PATCH", f"/pages/{page_id}", {
-            "properties": {"Status": {"multi_select": [{"name": "Готово до публікації"}]}}
+            "properties": {
+                "Status": {"multi_select": [{"name": "Готово до публікації"}]},
+                "Дата публікації": {"date": {"start": tomorrow}},
+            }
         })
         edit_msg(token, chat_id, msg_id,
-            "⏸ Залишено. Стаття повернеться на схвалення наступного дня.")
+            "⏸ Залишено. Стаття повернеться на схвалення завтра.")
         with _lock:
             _blog_sent_for_review.discard(page_id)
 
