@@ -1,0 +1,27 @@
+version: "3.9"
+
+services:
+  # Telegram бот — постійно працює, чекає схвалень
+  bot:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    command: python -m bot.bot
+
+  # Парсинг planfix.com/blog — щодня о 10:00 за Київським часом
+  news:
+    build: .
+    restart: no
+    env_file: .env
+    command: >
+      sh -c "
+        echo '0 7 * * * cd /app && python scripts/planfix_to_blog.py --news >> /var/log/news.log 2>&1' | crontab - &&
+        cron -f
+      "
+
+  # Парсинг planfix.ru — щодня о 10:05 (потребує не-UA IP)
+  # cases:
+  #   build: .
+  #   restart: no
+  #   env_file: .env
+  #   command: python scripts/planfix_to_blog.py --cases
