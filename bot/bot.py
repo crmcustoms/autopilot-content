@@ -223,6 +223,9 @@ def check_and_send_posts(token, notion_token, db_ids, admin_chat_id):
 
     count = 0
     for page in pages:
+        # Максимум 1 пост за раз
+        if count >= 1:
+            break
         post = parse_post(page)
         with _lock:
             if post["id"] in _sent_for_review:
@@ -263,6 +266,9 @@ def check_and_send_blog_articles(token, blog_token, blog_db, admin_chat_id):
 
     count = 0
     for page in pages:
+        # Максимум 1 стаття за раз — щоб не спамити
+        if count >= 1:
+            break
         article = parse_blog(page)
         with _lock:
             if article["id"] in _blog_sent_for_review:
