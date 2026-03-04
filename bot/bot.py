@@ -6,10 +6,11 @@ Telegram-бот @crmcontent_bot
      pub:/rev:/rej: → публікація в TG канал
   2. Статті блогу (Blog DB, статус «Готово до публікації»)
      bpub:/brej: → Notion Blog (Завершено + Публиковать=True) + авто TG анонс → канал
+  3. Фото від адміна → "Завантажити в сховище" → S3 URL
 
 Запуск: python -m bot.bot  (з кореня проекту)
 """
-import io, json, os, sys, threading, time, urllib.request, urllib.error
+import io, json, os, sys, threading, time, urllib.request, urllib.error, uuid
 from datetime import datetime, timedelta
 
 if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
@@ -183,12 +184,66 @@ def generate_blog_tg_announce(api_key, article):
             f"Читати: {site_url}"
         )
 
+# ─── S3 ─────────────────────────────────────────────────────────────────────
+
+def s3_upload(env, data: bytes, key: str, content_type: str = "image/jpeg") -> str:
+    """Завантажує bytes у S3-сумісне сховище, повертає публічний URL."""
+    import boto3
+    from botocore.client import Config
+
+    endpoint  = env.get("S3_ENDPOINT", "").rstrip("/")
+    access    = env.get("S3_ACCESS_KEY", "")
+    secret    = env.get("S3_SECRET_KEY", "")
+    bucket    = env.get("S3_BUCKET", "")
+    region    = env.get("S3_REGION", "us-east-1")
+    pub_url   = env.get("S3_PUBLIC_URL", "").rstrip("/")
+
+    kwargs = dict(
+        aws_access_key_id=access,
+        aws_secret_access_key=secret,
+        region_name=region,
+        config=Config(signature_version="s3v4"),
+    )
+    if endpoint:
+        kwargs["endpoint_url"] = endpoint
+
+    s3 = boto3.client("s3", **kwargs)
+    s3.put_object(
+        Bucket=bucket,
+        Key=key,
+        Body=data,
+        ContentType=content_type,
+    )
+
+    if pub_url:
+        return f"{pub_url}/{key}"
+    elif endpoint:
+        return f"{endpoint}/{bucket}/{key}"
+    else:
+        return f"https://{bucket}.s3.{region}.amazonaws.com/{key}"
+
+
+def tg_download_file(token: str, file_id: str) -> bytes:
+    """Завантажує файл з Telegram серверів, повертає bytes."""
+    resp, err = tg_req(token, "getFile", {"file_id": file_id})
+    if err or not resp:
+        raise RuntimeError(f"getFile error: {err}")
+    file_path = resp.get("result", {}).get("file_path", "")
+    if not file_path:
+        raise RuntimeError("file_path is empty")
+    url = f"https://api.telegram.org/file/bot{token}/{file_path}"
+    with urllib.request.urlopen(url, timeout=30) as r:
+        return r.read()
+
+
 # ─── STATE ──────────────────────────────────────────────────────────────────
 # chat_id -> {"page_id", "original_text", "msg_id", "name"}
 _waiting_revision = {}
 # page_id -> не надсилати двічі (для обох флоу)
 _sent_for_review      = set()   # content_plan posts
 _blog_sent_for_review = set()   # blog articles
+# chat_id -> {"file_id": ..., "msg_id": ...}  (фото чекає дії)
+_pending_photo = {}
 _lock = threading.Lock()
 
 # ─── KEYBOARDS ──────────────────────────────────────────────────────────────
@@ -489,6 +544,42 @@ def handle_callback(token, notion_token, db_ids, blog_token, blog_db,
             f"• «заголовок більш конкретний»\n\n"
             f"_/cancel щоб скасувати_")
 
+    # ════════════ PHOTO UPLOAD FLOW ════════════
+
+    elif data == "imgup":
+        with _lock:
+            photo_state = _pending_photo.pop(str(chat_id), None)
+        if not photo_state:
+            edit_msg(token, chat_id, msg_id, "⚠️ Фото не знайдено. Надішли ще раз."); return
+
+        edit_msg(token, chat_id, msg_id, "⏳ Завантажую в сховище...")
+
+        try:
+            img_bytes = tg_download_file(token, photo_state["file_id"])
+        except Exception as e:
+            edit_msg(token, chat_id, msg_id, f"❌ Помилка завантаження з TG: {e}"); return
+
+        # Генеруємо унікальне ім'я файлу
+        ts  = datetime.now().strftime("%Y%m%d-%H%M%S")
+        uid = uuid.uuid4().hex[:6]
+        key = f"uploads/{ts}-{uid}.jpg"
+
+        try:
+            url = s3_upload(env, img_bytes, key, "image/jpeg")
+        except Exception as e:
+            edit_msg(token, chat_id, msg_id, f"❌ Помилка S3: {e}"); return
+
+        edit_msg(token, chat_id, msg_id,
+            f"✅ *Завантажено в сховище!*\n\n"
+            f"`{url}`\n\n"
+            f"_Скопіюй посилання та встав у статтю._")
+        print(f"[imgup] Uploaded: {url}")
+
+    elif data == "imgcancel":
+        with _lock:
+            _pending_photo.pop(str(chat_id), None)
+        edit_msg(token, chat_id, msg_id, "Скасовано.")
+
 # ─── MESSAGE HANDLER ────────────────────────────────────────────────────────
 
 def handle_message(token, notion_token, db_ids, channel_id, admin_chat_id, env, msg):
@@ -502,6 +593,20 @@ def handle_message(token, notion_token, db_ids, channel_id, admin_chat_id, env, 
 
     if revision_state and not text.startswith("/"):
         _handle_revision_request(token, notion_token, env, chat_id, text, revision_state)
+        return
+
+    # ─── Обробка фото ────────────────────────────────────────────────────────
+    photos = msg.get("photo")
+    if photos:
+        file_id = photos[-1]["file_id"]   # найбільший розмір
+        msg_id  = msg.get("message_id")
+        with _lock:
+            _pending_photo[str(chat_id)] = {"file_id": file_id, "msg_id": msg_id}
+        keyboard = {"inline_keyboard": [[
+            {"text": "📤 Завантажити в сховище", "callback_data": "imgup"},
+            {"text": "❌ Скасувати",              "callback_data": "imgcancel"},
+        ]]}
+        send(token, chat_id, "Що зробити з цим фото?", keyboard=keyboard)
         return
 
     if text == "/start":
