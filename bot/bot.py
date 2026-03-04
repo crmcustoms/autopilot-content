@@ -585,17 +585,8 @@ def handle_callback(token, notion_token, db_ids, blog_token, blog_db,
 def handle_message(token, notion_token, db_ids, channel_id, admin_chat_id, env, msg):
     chat_id = msg["chat"]["id"]
     text = (msg.get("text") or "").strip()
-    if not text:
-        return
 
-    with _lock:
-        revision_state = _waiting_revision.get(str(chat_id))
-
-    if revision_state and not text.startswith("/"):
-        _handle_revision_request(token, notion_token, env, chat_id, text, revision_state)
-        return
-
-    # ─── Обробка фото ────────────────────────────────────────────────────────
+    # ─── Обробка фото (до перевірки тексту!) ─────────────────────────────────
     photos = msg.get("photo")
     if photos:
         file_id = photos[-1]["file_id"]   # найбільший розмір
@@ -607,6 +598,16 @@ def handle_message(token, notion_token, db_ids, channel_id, admin_chat_id, env, 
             {"text": "❌ Скасувати",              "callback_data": "imgcancel"},
         ]]}
         send(token, chat_id, "Що зробити з цим фото?", keyboard=keyboard)
+        return
+
+    if not text:
+        return
+
+    with _lock:
+        revision_state = _waiting_revision.get(str(chat_id))
+
+    if revision_state and not text.startswith("/"):
+        _handle_revision_request(token, notion_token, env, chat_id, text, revision_state)
         return
 
     if text == "/start":
