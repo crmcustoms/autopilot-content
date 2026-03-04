@@ -202,7 +202,8 @@ def s3_upload(env, data: bytes, key: str, content_type: str = "image/jpeg") -> s
         aws_access_key_id=access,
         aws_secret_access_key=secret,
         region_name=region,
-        config=Config(signature_version="s3v4"),
+        # path-style обов'язковий для bucket-names з крапками (напр. crmcustoms.site)
+        config=Config(signature_version="s3v4", s3={"addressing_style": "path"}),
     )
     if endpoint:
         kwargs["endpoint_url"] = endpoint
@@ -220,7 +221,8 @@ def s3_upload(env, data: bytes, key: str, content_type: str = "image/jpeg") -> s
     elif endpoint:
         return f"{endpoint}/{bucket}/{key}"
     else:
-        return f"https://{bucket}.s3.{region}.amazonaws.com/{key}"
+        # path-style URL — без крапок у піддомені, SSL працює коректно
+        return f"https://s3.{region}.amazonaws.com/{bucket}/{key}"
 
 
 def tg_download_file(token: str, file_id: str) -> bytes:
