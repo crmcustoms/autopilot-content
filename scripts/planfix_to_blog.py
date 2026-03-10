@@ -99,6 +99,40 @@ def fetch(url, timeout=20):
 # RSS
 # ============================================================
 
+def scrape_tg_channel(channel_url):
+    """Парсить публічний Telegram канал через t.me/s/CHANNEL.
+    Повертає список {'url': ..., 'title': ...} з посиланнями на пости."""
+    try:
+        s_url = channel_url.rstrip('/').replace('t.me/', 't.me/s/')
+        if '/s/' not in s_url:
+            s_url = s_url.replace('t.me/', 't.me/s/')
+        html, _ = fetch(s_url, timeout=15)
+        # Шукаємо посилання на окремі пости: t.me/planfixua/123
+        import re as _re
+        base = s_url.split('/s/')[0] + '/'
+        channel_name = s_url.split('/s/')[-1].split('/')[0]
+        # Витягуємо текст постів і їх номери
+        posts = []
+        # Пости мають data-post="channel/number"
+        for m in _re.finditer(
+            r'data-post=["\']' + channel_name + r'/(\d+)["\'].*?'
+            r'class=["\']tgme_widget_message_text["\'][^>]*>(.*?)</div>',
+            html, _re.DOTALL | _re.IGNORECASE
+        ):
+            num  = m.group(1)
+            text = _re.sub(r'<[^>]+>', ' ', m.group(2)).strip()
+            text = ' '.join(text.split())[:200]
+            url  = f"https://t.me/{channel_name}/{num}"
+            if text:
+                posts.append({'url': url, 'title': text[:80]})
+        if posts:
+            print(f'  TG канал {channel_name}: {len(posts)} постів')
+        return posts
+    except Exception as e:
+        print(f'  ERR TG scrape: {e}')
+        return []
+
+
 def try_rss(blog_url):
     parsed = urllib.parse.urlparse(blog_url)
     base = f"{parsed.scheme}://{parsed.netloc}"
@@ -317,17 +351,14 @@ def claude(api_key, system_p, user_p, max_tokens=3500):
 
 
 EVAL_SYSTEM = (
-    "Ти контент-менеджер компанії CRMCUSTOMS (Україна, crmcustoms.com). "
-    "Ми — офіційний партнер Planfix в Україні. "
-    "Пишемо від першої особи компанії: 'у Planfix з'явилось', 'ми вже перевірили', "
-    "'наш досвід показує'. Ніяких посилань на planfix.ru або інші джерела. "
-    "Мова: жива українська ділова."
+    "Ти контент-менеджер CRMCUSTOMS — офіційного партнера Planfix в Україні (crmcustoms.com). "
+    "Тон: живий, дружній, від компанії-партнера. Мова: проста ділова українська без канцеляриту."
 )
 
 EVAL_PROMPT = """\
-Проаналізуй статтю та зроби рерайт для crmcustoms.com.
+Planfix опублікував нову статтю/новину. Зроби короткий пост для блогу CRMCUSTOMS.
 
-ОРИГІНАЛЬНА СТАТТЯ:
+ОРИГІНАЛ:
 Заголовок: {title}
 Джерело: {url}
 
@@ -336,90 +367,55 @@ EVAL_PROMPT = """\
 
 ━━━ КРОК 1: ОЦІНКА ━━━
 
-Визнач тип статті:
-  "news"  — новина про функцію, оновлення або анонс у Planfix
-  "case"  — кейс клієнта, приклад використання, success story
+ПРОПУСТИТИ якщо:
+  • Стаття не про Planfix (реклама, загальні поради без Planfix)
+  • РФ-специфіка: Сбербанк, Яндекс, СДЕК, Wildberries, Ozon, ВТБ, МТС, hh.ru, Авіто тощо
 
-Для "case" — перевір на РФ-специфічність:
-  ПРОПУСТИТИ якщо: є Сбербанк, СДЕК, Яндекс (і всі його сервіси), Wildberries, Ozon,
-  ВТБ, МТС, Мегафон, hh.ru, Авіто, Ростелеком, ЄПГУ, Держпослуги, СБП (РФ),
-  або будь-який сервіс доступний ТІЛЬКИ в РФ.
-  ЗАЛИШИТИ якщо: про типовий бізнес-процес, або використовує global SaaS
-  (Gmail, Zoom, Slack, WhatsApp, Telegram, Stripe, Zapier, Make, тощо).
+ЗАЛИШИТИ якщо: новина про функцію/оновлення/фічу Planfix, або кейс з глобальними SaaS
+(Gmail, Zoom, Slack, WhatsApp, Telegram, Stripe, Zapier, Make тощо).
 
-━━━ КРОК 2: РЕРАЙТ (тільки якщо skip=false) ━━━
+━━━ КРОК 2: КОРОТКИЙ ПОСТ (тільки якщо skip=false) ━━━
 
-Для "news" (600-900 слів):
-  • Пишемо від CRMCUSTOMS: "у Planfix з'явилась нова можливість...",
-    "ми вже протестували це з нашими клієнтами...", "що це дає вашому бізнесу"
-  • ЗАБОРОНЕНО: будь-які посилання на джерело, "за даними Planfix", "оригінал статті"
-  • Структура: опис функції → як це працює → що це дає клієнту → кейс/приклад
+ОБСЯГ: 150-250 слів — не більше!
+ТОН: "Planfix молодці — вийшло оновлення X. Ось що це дає вашому бізнесу..."
+     Пишемо від CRMCUSTOMS, позитивно про Planfix як партнери.
+СТРУКТУРА: 1-2 абзаци суті → що це дає клієнту → (опційно) наш коментар
 
-Для "case" (600-900 слів):
-  • Повна анонімність: "один з наших клієнтів у сфері логістики/рітейлу/тощо"
-  • Прибрати назви РФ-компаній і замінити на "CRM-система", "сервіс доставки" тощо
-  • Якщо є РФ-сервіс — замінити на аналог або прибрати
-  • Фокус: опис бізнес-задачі → як налаштували Planfix → результат
+ЗАБОРОНЕНО:
+  • Посилання на джерело, "за даними Planfix", "оригінал статті"
+  • Порожні фрази ("це дуже важливо", "варто зазначити")
+  • Вигадувати факти яких немає в оригіналі
 
-ПОЛЯ NOTION BLOG DB (розумій їх призначення):
-  H1 — головний заголовок сторінки (до 70 символів)
-  H2 — підзаголовок / основний SEO підзаголовок (до 60 символів)
-  H3 — третій рівень SEO-заголовку або перший заголовок секції (до 60 символів)
-  title_seo — <title> тег сторінки (до 60 символів)
-  description — мета-опис (120-160 символів)
+ІЛЮСТРАЦІЇ (illustration_prompts) — 1 бізнес-сцена для генерації зображення.
+  Конкретна візуальна сцена 15-20 англ. слів: хто + дія + середовище.
+  Приклад: "Focused manager reviewing CRM pipeline on large monitor in modern Ukrainian office"
 
-КАТЕГОРІЯ (category) — обери одне з: Новини, Кейси, Бізнес, Маркетинг, Автоматизація, Інструменти, Бібліотека.
-  Новини = оновлення/функції Planfix; Кейси = success story клієнта; Автоматизація = інтеграції/воркфлоу;
-  Інструменти = огляд інструментів; Маркетинг = просування/SMM; Бізнес = загальні бізнес-поради.
+UI-СКРІНШОТ (ui_prompts) — тільки якщо стаття про конкретний модуль/функцію Planfix.
+  Детальний опис інтерфейсу: назва модуля, колонки, кнопки, кольори, дані у рядках.
+  Якщо загальна стаття — залиш [].
 
-ІЛЮСТРАЦІЇ (illustration_prompts) — 1-2 бізнес-сцени для статті (люди, дії, офіс).
-  Кожен промпт — конкретна візуальна сцена 15-25 англ. слів що підходить до теми секції.
-  Іде прямо у Flux без обробки. Приклад:
-  "Focused team member dragging colorful task cards across digital Kanban board on widescreen monitor"
-
-UI-СКРІНШОТИ (ui_prompts) — 0-1 скріншот інтерфейсу Planfix (тільки якщо стаття про конкретну функцію/модуль).
-  Описуй ДЕТАЛЬНО: назва модуля, колонки таблиці, дані у рядках, кнопки, кольори, sidebar.
-  Приклад для задач:
-  "Planfix CRM task management interface. Dark blue left sidebar with icons: Tasks, Projects, Calendar, Reports.
-   Main area shows Kanban board with 4 columns: Нові (3 cards), В роботі (5 cards), Перевірка (2 cards), Готово (8 cards).
-   Task cards show: title in bold, assigned user avatar, due date, orange priority indicator.
-   Active card highlighted: 'Налаштування CRM для клієнта', assigned to user avatar 'МТ', due 15.03.2026.
-   Top bar has search field, filter button, blue 'Додати задачу' button. White card background, clean modern UI."
-  Якщо стаття загальна (без конкретного модуля) — залиш ui_prompts порожнім масивом [].
-
-ПРАВИЛА SLUG: лише малі латинські, цифри, дефіс. Транслітерація:
+SLUG: лише малі латинські + цифри + дефіс. Транслітерація:
 а=a б=b в=v г=h д=d е=e є=ye ж=zh з=z и=y і=i ї=yi й=y к=k л=l м=m н=n о=o п=p
 р=r с=s т=t у=u ф=f х=kh ц=ts ч=ch ш=sh щ=shch ю=yu я=ya пробіл=- апостроф=нічого
 
-━━━ ВІДПОВІДЬ: ТІЛЬКИ JSON (без ```json) ━━━
+━━━ ВІДПОВІДЬ: ТІЛЬКИ JSON без ```json ━━━
 
 Якщо skip=true:
-{{"type": "case", "skip": true, "skip_reason": "коротка причина"}}
+{{"skip": true, "skip_reason": "коротка причина"}}
 
 Якщо skip=false:
 {{
-  "type": "news",
   "skip": false,
-  "h1": "Головний заголовок сторінки до 70 символів",
-  "h2": "Підзаголовок H2 до 60 символів",
-  "h3": "Третій рівень заголовку або перша секція до 60 символів",
+  "h1": "Заголовок до 70 символів",
   "title_seo": "SEO Title до 60 символів | CRMCUSTOMS",
-  "description": "Meta description 120-160 символів з ключовим словом",
+  "description": "Meta description 120-160 символів",
   "slug": "url-slug-transliterovanyi",
-  "keywords": "ключ1, ключ2, ключ3, ключ4, ключ5",
-  "lsi_keywords": "lsi1, lsi2, lsi3, lsi4",
   "category": "Новини",
-  "image_prompt": "Concrete visual scene (12-18 English words): [who] + [specific action] + [environment] + [mood/light]. Example: smiling manager showing colorful Kanban board to colleagues in sunny open-space office",
-  "illustration_prompts": [
-    "Concrete business scene 15-25 words matching section 2 topic",
-    "Concrete business scene 15-25 words matching section 4 topic"
-  ],
-  "ui_prompts": [
-    "Detailed Planfix interface description: module name, columns, data rows, buttons, colors, sidebar. Leave empty [] if article is not about specific Planfix feature."
-  ],
+  "illustration_prompts": ["Concrete business scene 15-20 English words"],
+  "ui_prompts": [],
   "sections": [
-    {{"type": "heading", "text": "Заголовок секції статті"}},
-    {{"type": "paragraph", "text": "Текст абзацу. До 1800 символів."}}
+    {{"type": "heading", "text": "Заголовок секції"}},
+    {{"type": "paragraph", "text": "Текст 150-250 слів"}}
   ]
 }}
 """
@@ -769,72 +765,28 @@ def process_article(url, api_key, blog_token, blog_db,
             print('  SKIP: slug вже існує')
             return 'skip'
 
-        env2 = load_env()
-        flux_url     = env2.get('FLUX_BLOG_WEBHOOK_URL', '')
-        illus_url    = env2.get('FLUX_ILLUSTRATIONS_WEBHOOK_URL', '')
-        ui_url       = env2.get('FLUX_UI_WEBHOOK_URL', '')
-        image_prompt = seo.get('image_prompt', '')
-
-        # ── Обкладинка: Flux ЗАВЖДИ перший → source як fallback ───────────
-        # Flux генерує S3 URL (сумісний із сайтом). Planfix-джерела — generic-лого
+        # ── Обкладинка: беремо з джерела (Planfix вже має хороші зображення) ──
         img_url = ''
-        if flux_url and image_prompt:
-            flux_text = f"{seo.get('h1', '')}. {seo.get('description', '')} | {image_prompt}"
-            print(f'  [cover] Flux: {flux_text[:70]}...')
-            generated = get_flux_image(flux_url, flux_text)
-            if generated:
-                img_url = generated
-                print(f'  [cover] ✓ S3: {img_url[:70]}')
-            else:
-                print(f'  [cover] Flux не відповів — fallback на фото зі статті')
-        if not img_url:
-            source_img = article.get('first_img', '') or ''
-            # Фільтруємо planfix-заглушки: transparent.gif, 1x1 пікселі, theme-assets
-            is_placeholder = any(x in source_img for x in (
-                'transparent', 'placeholder', '/themes/', '1x1', 'spacer', 'blank'
-            ))
-            if source_img and not is_placeholder and is_image_accessible(source_img):
-                img_url = source_img
-                print(f'  [cover] ✓ Фото зі статті (fallback): {img_url[:65]}')
-            elif source_img:
-                reason = 'заглушка/theme-asset' if is_placeholder else 'недоступне'
-                print(f'  [cover] ✗ Фото зі статті {reason} — без обкладинки')
-            else:
-                print(f'  [WARN] Без обкладинки (Flux не налаштовано або не відповів)')
+        source_img = article.get('first_img', '') or ''
+        is_placeholder = any(x in source_img for x in (
+            'transparent', 'placeholder', '/themes/', '1x1', 'spacer', 'blank'
+        ))
+        if source_img and not is_placeholder and is_image_accessible(source_img):
+            img_url = source_img
+            print(f'  [cover] ✓ Фото зі статті: {img_url[:65]}')
+        else:
+            print(f'  [cover] Фото не знайдено або недоступне')
         # ──────────────────────────────────────────────────────────────────
 
-        # ── Ілюстрації (бізнес-сцени) + UI-скріншоти для тіла статті ────────
+        # Зберігаємо illustration_prompts та ui_prompts у логах (для майбутньої генерації)
         illustration_prompts = seo.get('illustration_prompts', [])
-        ui_prompts           = seo.get('ui_prompts', [])
-        illustrations = []   # бізнес-сцени → після 2-го heading
-        ui_images     = []   # UI Planfix → після 3-го heading
+        ui_prompts = seo.get('ui_prompts', [])
+        if illustration_prompts:
+            print(f'  [prompts] illustration: {illustration_prompts[0][:80]}')
+        if ui_prompts:
+            print(f'  [prompts] ui: {ui_prompts[0][:80]}')
 
-        if illus_url and illustration_prompts:
-            print(f'  [illus] Генерую {min(len(illustration_prompts), 2)} ілюстрацій...')
-            for i, prompt in enumerate(illustration_prompts[:2]):
-                img = get_flux_image(illus_url, prompt)
-                if img:
-                    illustrations.append(img)
-                    print(f'  [illus {i+1}] ✓ {img[:60]}')
-                else:
-                    print(f'  [illus {i+1}] не отримано')
-
-        if ui_url and ui_prompts:
-            print(f'  [ui] Генерую {min(len(ui_prompts), 1)} UI-скріншот...')
-            for i, prompt in enumerate(ui_prompts[:1]):
-                img = get_flux_image(ui_url, prompt)
-                if img:
-                    ui_images.append(img)
-                    print(f'  [ui {i+1}] ✓ {img[:60]}')
-                else:
-                    print(f'  [ui {i+1}] не отримано')
-
-        # Вставляємо: ілюстрації після 2-го heading, UI після 3-го
-        all_extra = illustrations + ui_images  # inject_illustrations вставить по черзі
-        sections_with_illus = inject_illustrations(seo.get('sections', []), all_extra)
         seo_final = dict(seo)
-        seo_final['sections'] = sections_with_illus
-        # ──────────────────────────────────────────────────────────────────
 
         # 3. Notion Blog DB
         # Бот потім надішле на схвалення. Після схвалення → Завершено + Публиковать=True + авто TG анонс
@@ -935,9 +887,9 @@ def main():
         process_article(url, api_key, blog_token, blog_db, main_token, content_plan_db)
         return
 
-    # Визначити режим: --news / --cases / обидва
-    do_news  = '--news'  in args or not args
-    do_cases = '--cases' in args or not args
+    # Визначити режим: --news / --tg / обидва (кейси прибрано — пишемо вручну)
+    do_news = '--news' in args or not args
+    do_tg   = '--tg'   in args or not args
 
     processed      = load_processed()
     existing_slugs = get_existing_slugs(blog_token, blog_db)
@@ -947,25 +899,36 @@ def main():
 
     if do_news:
         if not news_url:
-            print('[WARN] PLANFIX_NEWS_URL не заповнено в .env — пропускаю новини')
+            print('[WARN] PLANFIX_NEWS_URL не заповнено в .env — пропускаю')
         else:
             d, s, e = run_source(
-                news_url, 'Planfix.com — НОВИНИ (без РФ-фільтру)',
+                news_url, 'Planfix.com — НОВИНИ',
                 api_key, blog_token, blog_db, main_token, content_plan_db,
                 processed, existing_slugs
             )
             total_done += d; total_skip += s; total_err += e
 
-    if do_cases:
-        if not cases_url:
-            print('[WARN] PLANFIX_CASES_URL не заповнено в .env — пропускаю кейси')
+    if do_tg:
+        tg_channel = env.get('PLANFIX_TG_CHANNEL', 'https://t.me/planfixua')
+        # Парсимо публічний TG канал через t.me/s/
+        tg_articles = scrape_tg_channel(tg_channel)
+        new_tg = [a for a in tg_articles if a['url'] not in processed]
+        if new_tg:
+            print(f'\n=== @planfixua Telegram ({len(new_tg)} нових) ===')
+            for i, art in enumerate(new_tg[:MAX_PER_RUN], 1):
+                print(f'--- [{i}] {art["title"][:60]} ---')
+                result = process_article(
+                    art['url'], api_key, blog_token, blog_db,
+                    main_token, content_plan_db, existing_slugs
+                )
+                processed.add(art['url'])
+                save_processed(processed)
+                if result == 'ok':     total_done += 1
+                elif result == 'skip': total_skip += 1
+                else:                  total_err  += 1
+                time.sleep(3)
         else:
-            d, s, e = run_source(
-                cases_url, 'Planfix.ru — КЕЙСИ (з РФ-фільтром)',
-                api_key, blog_token, blog_db, main_token, content_plan_db,
-                processed, existing_slugs
-            )
-            total_done += d; total_skip += s; total_err += e
+            print('\n=== @planfixua Telegram: нових постів немає ===')
 
     print(f'\n=== ПІДСУМОК: опубліковано {total_done}, пропущено {total_skip}, помилок {total_err} ===')
 
