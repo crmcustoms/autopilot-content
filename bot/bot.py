@@ -284,19 +284,28 @@ def check_and_send_posts(token, notion_token, db_ids, admin_chat_id):
         if count >= 1:
             break
         post = parse_post(page)
+
+        # Пропускаємо пости без тексту — нема чого затверджувати
+        if not (post["text"] or "").strip():
+            print(f"[posts] Skip empty post: {post['name'][:50]}")
+            continue
+
         with _lock:
             if post["id"] in _sent_for_review:
                 continue
             _sent_for_review.add(post["id"])
 
         platforms = ", ".join(post["platforms"]) if post["platforms"] else "Telegram"
-        msg = f"*📣 TG Пост* | {post['type']} | {platforms}\n\n{post['text'] or '_текст не заповнений_'}"
+        msg = f"*📣 TG Пост* | {post['type']} | {platforms}\n\n{post['text']}"
         result, err = send(token, admin_chat_id, msg, keyboard=post_keyboard(post["id"]))
         if err:
             print(f"[posts] send error: {err}")
             with _lock:
                 _sent_for_review.discard(post["id"])
         else:
+            # Статус «На розгляді» — при рестарті бот не пришле знову
+            notion_req(notion_token, "PATCH", f"/pages/{post['id']}",
+                {"properties": {"Статус": {"select": {"name": "На розгляді"}}}})
             count += 1
 
     if count:
