@@ -386,9 +386,10 @@ Planfix опублікував нову статтю/новину. Зроби к
   • Порожні фрази ("це дуже важливо", "варто зазначити")
   • Вигадувати факти яких немає в оригіналі
 
-ІЛЮСТРАЦІЇ (illustration_prompts) — 1 бізнес-сцена для генерації зображення.
-  Конкретна візуальна сцена 15-20 англ. слів: хто + дія + середовище.
-  Приклад: "Focused manager reviewing CRM pipeline on large monitor in modern Ukrainian office"
+ІЛЮСТРАЦІЇ (illustration_prompts) — 1 сцена для blueprint-ілюстрації в стилі технічного креслення.
+  Опиши ЗМІСТ сцени (10-15 англ. слів): хто + що робить + що видно на екрані/схемі.
+  НЕ описуй стиль — стиль додається автоматично.
+  Приклад: "manager reviewing sales funnel diagram with team around whiteboard"
 
 UI-СКРІНШОТ (ui_prompts) — тільки якщо стаття про конкретний модуль/функцію Planfix.
   Детальний опис інтерфейсу: назва модуля, колонки, кнопки, кольори, дані у рядках.
@@ -470,6 +471,14 @@ def claude_tg_announce(api_key, seo, site_url):
 # ============================================================
 # FLUX IMAGE GENERATION (через n8n webhook, під капотом — Flux via Replicate)
 # ============================================================
+
+# Стиль ілюстрацій CRM Customs: blueprint + yellow accent
+BLUEPRINT_STYLE_PREFIX = (
+    "blueprint technical illustration on cream paper, black ink hand-drawn lines, "
+    "yellow amber accent color (#FAC775) for highlights and dimension markers, "
+    "architectural sketch style, grid overlay, engineering annotation callouts, "
+    "hand-drawn UI wireframe elements, no photography, no gradients, scene: "
+)
 
 def is_image_accessible(url, timeout=10):
     """Перевіряє доступність зображення через HEAD-запит.
@@ -778,11 +787,22 @@ def process_article(url, api_key, blog_token, blog_db,
             print(f'  [cover] Фото не знайдено або недоступне')
         # ──────────────────────────────────────────────────────────────────
 
-        # Зберігаємо illustration_prompts та ui_prompts у логах (для майбутньої генерації)
+        # Генеруємо blueprint-ілюстрацію через Flux (замінює або доповнює source img)
         illustration_prompts = seo.get('illustration_prompts', [])
         ui_prompts = seo.get('ui_prompts', [])
-        if illustration_prompts:
-            print(f'  [prompts] illustration: {illustration_prompts[0][:80]}')
+        flux_webhook = env.get('FLUX_BLOG_WEBHOOK_URL', '')
+        if illustration_prompts and flux_webhook:
+            scene = illustration_prompts[0]
+            styled_prompt = BLUEPRINT_STYLE_PREFIX + scene
+            print(f'  [image] Генерую blueprint ілюстрацію: {scene[:70]}...')
+            generated = get_flux_image(flux_webhook, styled_prompt)
+            if generated:
+                img_url = generated
+                print(f'  [image] ✓ Blueprint згенеровано: {generated[:65]}')
+            else:
+                print(f'  [image] Flux не відповів, використовую source img')
+        elif illustration_prompts:
+            print(f'  [image] FLUX_BLOG_WEBHOOK_URL не задано, пропускаю генерацію')
         if ui_prompts:
             print(f'  [prompts] ui: {ui_prompts[0][:80]}')
 
