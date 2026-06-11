@@ -246,7 +246,188 @@ _sent_for_review      = set()   # content_plan posts
 _blog_sent_for_review = set()   # blog articles
 # chat_id -> {"file_id": ..., "msg_id": ...}  (фото чекає дії)
 _pending_photo = {}
+# chat_id -> case interview state
+_case_state = {}
 _lock = threading.Lock()
+
+# ─── CASES CONSTANTS ─────────────────────────────────────────────────────────
+
+CASES_DB_ID = "13f1abc6-131b-8016-8787-f15b59c68e19"
+
+CASE_QUESTIONS = [
+    ("client", "1️⃣ *Назва клієнта*\nЯк називати клієнта в кейсі? Публічна назва або анонімно?\n_Приклад: «IDCARD» або «виробник пластикових карток, Київ»_"),
+    ("sphere", "2️⃣ *Сфера бізнесу*\nЩо робить клієнт? Яка галузь, масштаб?\n_Приклад: «Виробництво пластикових карток, 20 співробітників, B2B»_"),
+    ("problem", "3️⃣ *Проблема / Задача*\nЯка основна проблема або задача, яку ви вирішували?\n_Приклад: «Не було синхронізації між фінансовою системою та CRM, дані вводились вручну»_"),
+    ("solution", "4️⃣ *Що зробили*\nЯке рішення реалізували? Стек, сервіси, обсяг роботи?\n_Приклад: «Python FastAPI сервіс, інтеграція QF → KeyCRM, cron кожні 10 хв, Docker деплой»_"),
+    ("result", "5️⃣ *Результат з цифрами*\nЩо змінилось? Конкретні метрики, терміни.\n_Приклад: «3 години роботи вручну → 0, синхронізація автоматична, впроваджено за 2 тижні»_"),
+    ("challenge", "6️⃣ *Найскладніше*\nЩо було найскладніше технічно або організаційно?\n_Приклад: «PyPI заблоковано на сервері клієнта — довелось робити Dockerfile.patch»_"),
+    ("quote", "7️⃣ *Цитата / Відгук клієнта*\nЩо сказав клієнт про результат? Або своїми словами що він досяг?\n_Якщо немає цитати — опиши результат словами клієнта_"),
+    ("category", "8️⃣ *Категорія кейсу*\nВибери основну категорію:\n• PlanFix\n• amoCRM\n• Bitrix24\n• n8n / Make\n• AI / Чатбот\n• Telegram-бот\n• Python / API інтеграція\n• Інше (напиши)"),
+]
+
+BLUEPRINT_STYLE_PREFIX = (
+    "blueprint technical illustration on cream paper, black ink hand-drawn lines, "
+    "yellow amber accent color (#FAC775) for highlights and dimension markers, "
+    "architectural sketch style, grid overlay, engineering annotation callouts, "
+    "hand-drawn UI wireframe elements, no photography, no gradients, scene: "
+)
+
+# ─── CASES: CLAUDE GENERATORS ───────────────────────────────────────────────
+
+def generate_case_plan(api_key, answers):
+    """Генерує план кейсу на основі відповідей інтерв'ю."""
+    prompt = f"""Ти — контент-менеджер CRM Customs. На основі відповідей клієнта склади план кейсу.
+
+ВІДПОВІДІ:
+Клієнт: {answers.get('client', '?')}
+Сфера: {answers.get('sphere', '?')}
+Проблема: {answers.get('problem', '?')}
+Рішення: {answers.get('solution', '?')}
+Результат: {answers.get('result', '?')}
+Складності: {answers.get('challenge', '?')}
+Цитата клієнта: {answers.get('quote', '?')}
+Категорія: {answers.get('category', '?')}
+
+Поверни JSON (тільки JSON, без ```):
+{{
+  "h1": "Заголовок кейсу до 80 символів (конкретний: клієнт + що зробили + результат)",
+  "seo_title": "SEO title до 60 символів | CRM Customs",
+  "seo_description": "Meta description 120-160 символів — проблема + рішення + результат",
+  "seo_slug": "url-slug-transliterovanyi-latin-only",
+  "illustration_scene": "Scene description 15 English words for blueprint illustration (who + what + environment)",
+  "sections": [
+    {{"title": "Заголовок розділу", "points": ["Ключовий пункт 1", "Пункт 2"]}}
+  ]
+}}
+
+Структура sections: 4-5 розділів: 1) Контекст і проблема 2) Що зробили 3) Технічні деталі 4) Результати 5) Висновок
+"""
+    raw = call_claude(api_key, prompt, max_tokens=1200)
+    import re as _re
+    m = _re.search(r'\{.*\}', raw, _re.DOTALL)
+    return json.loads(m.group()) if m else {}
+
+
+def generate_case_article(api_key, answers, plan):
+    """Генерує повний текст кейсу на основі плану."""
+    sections_text = "\n".join(
+        f"- {s['title']}: {', '.join(s.get('points', []))}"
+        for s in plan.get("sections", [])
+    )
+    prompt = f"""Ти — контент-менеджер CRM Customs. Напиши повноцінний кейс для сайту crmcustoms.com.
+
+ПЛАН:
+H1: {plan.get('h1', '')}
+Структура:
+{sections_text}
+
+МАТЕРІАЛИ:
+Клієнт: {answers.get('client', '?')}
+Сфера: {answers.get('sphere', '?')}
+Проблема: {answers.get('problem', '?')}
+Рішення: {answers.get('solution', '?')}
+Результат: {answers.get('result', '?')}
+Складності: {answers.get('challenge', '?')}
+Цитата: {answers.get('quote', '?')}
+
+ВИМОГИ:
+- Мова: українська, ділова але жива, без канцеляриту
+- Обсяг: 400-600 слів
+- Кожен розділ: 2-4 абзаци
+- Включи цитату клієнта (якщо є) в лапках
+- Конкретні цифри і технічні деталі
+- В кінці — короткий висновок + CTA
+
+Поверни JSON (тільки JSON, без ```):
+{{
+  "sections": [
+    {{"type": "heading", "text": "Заголовок розділу"}},
+    {{"type": "paragraph", "text": "Текст абзацу"}}
+  ]
+}}
+"""
+    raw = call_claude(api_key, prompt, max_tokens=3000)
+    import re as _re
+    m = _re.search(r'\{.*\}', raw, _re.DOTALL)
+    return json.loads(m.group()) if m else {"sections": []}
+
+
+def get_flux_image_for_case(env, scene_description):
+    """Генерує blueprint ілюстрацію для кейсу через Flux webhook."""
+    import urllib.parse as _up
+    webhook_url = env.get("FLUX_CASES_WEBHOOK_URL", "") or env.get("FLUX_BLOG_WEBHOOK_URL", "")
+    if not webhook_url or not scene_description:
+        return None
+    styled = BLUEPRINT_STYLE_PREFIX + scene_description
+    try:
+        encoded = _up.quote(styled, safe="")
+        url = f"{webhook_url.rstrip('/')}?text={encoded}"
+        req = urllib.request.Request(url, headers={"User-Agent": "CRMCustoms-ContentBot/1.0", "Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=90) as r:
+            data = json.loads(r.read())
+            if isinstance(data, list) and data:
+                data = data[0]
+            if isinstance(data, dict):
+                for key in ("public_link", "Location", "url", "imageUrl", "image_url", "output"):
+                    val = data.get(key, "")
+                    if isinstance(val, str) and val.startswith("http"):
+                        return val
+    except Exception as e:
+        print(f"[case] Flux error: {e}")
+    return None
+
+
+def save_case_to_notion(notion_token, plan, article, img_url, answers, author_id=""):
+    """Зберігає кейс у Notion Cases DB зі статусом 'In progress'."""
+    def url_prop(url):
+        return {"url": url or None}
+
+    def ms_prop(*names):
+        return {"multi_select": [{"name": n} for n in names if n]}
+
+    category = answers.get("category", "Інше")
+
+    props = {
+        "Name":                  {"title": rt(plan.get("h1", "")[:200])},
+        "h1":                    {"rich_text": rt(plan.get("h1", ""))},
+        "title":                 {"rich_text": rt(plan.get("seo_title", ""))},
+        "Description":           {"rich_text": rt(plan.get("seo_description", ""))},
+        "Problem":               {"rich_text": rt(answers.get("problem", ""))},
+        "Slug":                  {"rich_text": rt(plan.get("seo_slug", ""))},
+        "AI keywords":           {"rich_text": rt(plan.get("seo_slug", "").replace("-", ", "))},
+        "Background photo":      url_prop(img_url),
+        "Social network img":    url_prop(img_url),
+        "Date of publication":   {"date": {"start": str(datetime.now().date())}},
+        "Category":              ms_prop(category),
+    }
+    if author_id:
+        props["Автор"] = {"relation": [{"id": author_id}]}
+
+    blocks = []
+    for s in article.get("sections", []):
+        t = s.get("type", "")
+        if t == "heading":
+            blocks.append({"object": "block", "type": "heading_2",
+                           "heading_2": {"rich_text": [{"type": "text", "text": {"content": s["text"][:2000]}}]}})
+        elif t == "paragraph":
+            text = s["text"]
+            for i in range(0, len(text), 2000):
+                blocks.append({"object": "block", "type": "paragraph",
+                               "paragraph": {"rich_text": [{"type": "text", "text": {"content": text[i:i+2000]}}]}})
+
+    return notion_req(notion_token, "POST", "/pages", {
+        "parent": {"database_id": CASES_DB_ID},
+        "properties": props,
+        "children": blocks[:98],
+    })
+
+
+def publish_case_to_notion(notion_token, page_id):
+    """Змінює статус кейсу з 'In progress' на 'Shared' (публікує на сайті)."""
+    return notion_req(notion_token, "PATCH", f"/pages/{page_id}", {
+        "properties": {"Status": {"select": {"name": "Shared"}}}
+    })
+
 
 # ─── KEYBOARDS ──────────────────────────────────────────────────────────────
 
@@ -591,6 +772,139 @@ def handle_callback(token, notion_token, db_ids, blog_token, blog_db,
             _pending_photo.pop(str(chat_id), None)
         edit_msg(token, chat_id, msg_id, "Скасовано.")
 
+    # ════════════ CASE FLOW ════════════
+
+    elif data == "case_plan_ok":
+        with _lock:
+            state = _case_state.get(str(chat_id))
+        if not state:
+            edit_msg(token, chat_id, msg_id, "Стан кейсу не знайдено. Почни /newcase знову."); return
+
+        edit_msg(token, chat_id, msg_id, "⏳ Пишу статтю та генерую ілюстрацію…\n_(це займе ~30-60 секунд)_")
+
+        plan = state["plan"]
+        answers = state["answers"]
+
+        # Паралельно: article + illustration
+        article = generate_case_article(api_key, answers, plan)
+        img_url = get_flux_image_for_case(env, plan.get("illustration_scene", ""))
+
+        if not img_url:
+            send(token, chat_id,
+                "⚠️ Ілюстрацію не вдалось згенерувати (Flux не відповів або FLUX_CASES_WEBHOOK_URL не задано).\n"
+                "Кейс без ілюстрації НЕ публікується. Перевір webhook і спробуй ще раз: /newcase")
+            with _lock:
+                _case_state.pop(str(chat_id), None)
+            return
+
+        # Зберігаємо в state для публікації
+        with _lock:
+            _case_state[str(chat_id)]["article"] = article
+            _case_state[str(chat_id)]["img_url"] = img_url
+            _case_state[str(chat_id)]["step"] = "article_review"
+
+        # Формуємо прев'ю
+        preview_parts = [f"*{plan.get('h1', '')}*\n\n_{plan.get('seo_description', '')}_\n"]
+        for s in article.get("sections", [])[:3]:
+            if s["type"] == "heading":
+                preview_parts.append(f"\n*{s['text']}*")
+            elif s["type"] == "paragraph":
+                preview_parts.append(s["text"][:200] + "…")
+
+        preview = "\n".join(preview_parts)
+        keyboard = {"inline_keyboard": [
+            [{"text": "✅ Публікувати на сайт + TG", "callback_data": "case_pub"}],
+            [{"text": "✏️ Переписати статтю",       "callback_data": "case_rewrite"}],
+            [{"text": "❌ Скасувати",                "callback_data": "case_cancel"}],
+        ]}
+
+        # Відправляємо ілюстрацію + текст разом
+        tg_req(token, "sendPhoto", {
+            "chat_id": chat_id,
+            "photo": img_url,
+            "caption": f"🖼 Blueprint ілюстрація для кейсу",
+        })
+        send(token, chat_id,
+            f"*📄 Кейс готовий до публікації*\n\n"
+            f"{preview}\n\n"
+            f"*SEO:* `{plan.get('seo_slug', '')}`\n"
+            f"*Ілюстрація:* вище ↑",
+            keyboard=keyboard)
+
+    elif data == "case_plan_edit":
+        with _lock:
+            state = _case_state.get(str(chat_id))
+        if not state:
+            edit_msg(token, chat_id, msg_id, "Стан не знайдено."); return
+        with _lock:
+            _case_state[str(chat_id)]["step"] = "plan_edit"
+        edit_msg(token, chat_id, msg_id,
+            "✏️ Напиши побажання до плану — що змінити, додати або прибрати:")
+
+    elif data == "case_plan_cancel":
+        with _lock:
+            _case_state.pop(str(chat_id), None)
+        edit_msg(token, chat_id, msg_id, "❌ Кейс скасовано.")
+
+    elif data == "case_pub":
+        with _lock:
+            state = _case_state.get(str(chat_id))
+        if not state:
+            edit_msg(token, chat_id, msg_id, "Стан не знайдено."); return
+
+        edit_msg(token, chat_id, msg_id, "⏳ Зберігаю в Notion і публікую…")
+
+        author_id = env.get("CASES_AUTHOR_ID", "")
+        result, err = save_case_to_notion(
+            notion_token, state["plan"], state["article"],
+            state["img_url"], state["answers"], author_id
+        )
+        if err:
+            send(token, chat_id, f"❌ Помилка Notion: {err}"); return
+
+        page_id = result["id"]
+        notion_url = result.get("url", "")
+        slug = state["plan"].get("seo_slug", "")
+
+        # Публікуємо (статус → Shared)
+        publish_case_to_notion(notion_token, page_id)
+
+        # TG анонс у канал
+        channel_id = env.get("TELEGRAM_CHANNEL_ID", "@prodayslonakume")
+        site_url = f"https://crmcustoms.com/uk/cases/{slug}/" if slug else "https://crmcustoms.com/uk/cases/"
+        tg_text = (
+            f"📋 *Новий кейс*\n\n"
+            f"*{state['plan'].get('h1', '')}*\n\n"
+            f"{state['plan'].get('seo_description', '')}\n\n"
+            f"Читати: {site_url}"
+        )
+        publish_to_channel(token, channel_id, tg_text)
+
+        edit_msg(token, chat_id, msg_id,
+            f"✅ *Кейс опубліковано!*\n\n"
+            f"*Сайт:* {site_url}\n"
+            f"*Notion:* {notion_url}\n\n"
+            f"TG анонс відправлено в канал.")
+
+        with _lock:
+            _case_state.pop(str(chat_id), None)
+        print(f"[case] Published: {state['plan'].get('h1', '')[:60]}")
+
+    elif data == "case_rewrite":
+        with _lock:
+            state = _case_state.get(str(chat_id))
+        if not state:
+            edit_msg(token, chat_id, msg_id, "Стан не знайдено."); return
+        with _lock:
+            _case_state[str(chat_id)]["step"] = "article_edit"
+        edit_msg(token, chat_id, msg_id,
+            "✏️ Напиши побажання — що виправити в статті:")
+
+    elif data == "case_cancel":
+        with _lock:
+            _case_state.pop(str(chat_id), None)
+        edit_msg(token, chat_id, msg_id, "❌ Кейс скасовано.")
+
 # ─── MESSAGE HANDLER ────────────────────────────────────────────────────────
 
 def handle_message(token, notion_token, db_ids, channel_id, admin_chat_id, env, msg):
@@ -614,6 +928,13 @@ def handle_message(token, notion_token, db_ids, channel_id, admin_chat_id, env, 
     if not text:
         return
 
+    # ─── Case interview in progress (перевіряємо першим) ─────────────────────
+    with _lock:
+        case_state = _case_state.get(str(chat_id))
+    if case_state and not text.startswith("/"):
+        _handle_case_input(token, notion_token, env, chat_id, text, case_state)
+        return
+
     with _lock:
         revision_state = _waiting_revision.get(str(chat_id))
 
@@ -632,13 +953,37 @@ def handle_message(token, notion_token, db_ids, channel_id, admin_chat_id, env, 
             "✅ Публікувати → сайт + авто TG анонс\n"
             "✏️ Доробити → Claude виправляє, повертає на схвалення\n"
             "❌ Залишити як є → статус не змінюється\n\n"
-            "Команди: /check /plan /today /checkblog")
+            "*Кейси:*\n"
+            "/newcase — запустити воронку написання кейсу\n\n"
+            "Команди: /check /plan /today /checkblog /newcase")
         return
 
     if text == "/cancel":
         with _lock:
             _waiting_revision.pop(str(chat_id), None)
+            _case_state.pop(str(chat_id), None)
         send(token, chat_id, "Скасовано.")
+        return
+
+    if text.startswith("/newcase"):
+        parts = text.split(None, 1)
+        project_name = parts[1].strip() if len(parts) > 1 else ""
+        with _lock:
+            _case_state[str(chat_id)] = {
+                "step": 0,
+                "answers": {},
+                "project": project_name,
+                "plan": None,
+                "article": None,
+                "img_url": None,
+            }
+        intro = (
+            f"*📋 Новий кейс{' — ' + project_name if project_name else ''}*\n\n"
+            f"Задам 8 коротких питань, щоб зібрати матеріал. "
+            f"Відповідай в довільній формі — чим конкретніше, тим кращий кейс.\n"
+            f"_/cancel щоб скасувати у будь-який момент._\n\n"
+        )
+        send(token, chat_id, intro + CASE_QUESTIONS[0][1])
         return
 
     if text == "/check":
@@ -757,6 +1102,135 @@ def _handle_revision_request(token, notion_token, env, chat_id, wishes, state):
         ]]}
         send(token, chat_id, f"*Дороблено:*\n\n{new_text}", keyboard=keyboard)
         print(f"[rev] Revised: {name[:40]}")
+
+
+def _handle_case_input(token, notion_token, env, chat_id, text, state):
+    """Обробляє відповідь на поточне питання інтерв'ю кейсу."""
+    api_key = env.get("ANTHROPIC_API_KEY", "")
+    step = state["step"]
+
+    # ── Plan edit mode ──
+    if step == "plan_edit":
+        send(token, chat_id, "✍️ Оновлюю план через Claude…")
+        plan = state["plan"]
+        prompt = (
+            f"Оновити план кейсу згідно побажань.\n\n"
+            f"ПОТОЧНИЙ ПЛАН:\nH1: {plan.get('h1', '')}\n"
+            f"Розділи: {json.dumps([s['title'] for s in plan.get('sections', [])], ensure_ascii=False)}\n\n"
+            f"ПОБАЖАННЯ: {text}\n\n"
+            f"Поверни оновлений JSON того ж формату що і раніше (тільки JSON):\n"
+            f"{{\"h1\":\"...\",\"seo_title\":\"...\",\"seo_description\":\"...\",\"seo_slug\":\"...\",\"illustration_scene\":\"...\",\"sections\":[{{\"title\":\"...\",\"points\":[\"...\"]}}}]}}"
+        )
+        try:
+            raw = call_claude(api_key, prompt, max_tokens=1200)
+            import re as _re
+            m = _re.search(r'\{.*\}', raw, _re.DOTALL)
+            updated_plan = json.loads(m.group()) if m else plan
+        except Exception:
+            updated_plan = plan
+
+        with _lock:
+            _case_state[str(chat_id)]["plan"] = updated_plan
+            _case_state[str(chat_id)]["step"] = "plan_review"
+
+        _send_plan_for_approval(token, chat_id, updated_plan)
+        return
+
+    # ── Article edit mode ──
+    if step == "article_edit":
+        send(token, chat_id, "✍️ Переписую через Claude…")
+        plan = state["plan"]
+        article = state["article"]
+        answers = state["answers"]
+        sections_preview = "\n".join(
+            s["text"][:100] for s in article.get("sections", []) if s["type"] == "paragraph"
+        )[:500]
+        prompt = (
+            f"Перепиши статтю-кейс згідно побажань.\n\n"
+            f"ПОТОЧНА СТАТТЯ (скорочено): {sections_preview}\n\n"
+            f"ПОБАЖАННЯ: {text}\n\n"
+            f"Поверни оновлений JSON: {{\"sections\":[{{\"type\":\"heading\",\"text\":\"...\"}},{{\"type\":\"paragraph\",\"text\":\"...\"}}]}}"
+        )
+        try:
+            raw = call_claude(api_key, prompt, max_tokens=3000)
+            import re as _re
+            m = _re.search(r'\{.*\}', raw, _re.DOTALL)
+            updated_article = json.loads(m.group()) if m else article
+        except Exception:
+            updated_article = article
+
+        with _lock:
+            _case_state[str(chat_id)]["article"] = updated_article
+            _case_state[str(chat_id)]["step"] = "article_review"
+
+        # Ре-показуємо прев'ю з тими ж кнопками
+        plan = state["plan"]
+        preview_parts = [f"*{plan.get('h1', '')}*\n"]
+        for s in updated_article.get("sections", [])[:4]:
+            if s["type"] == "heading":
+                preview_parts.append(f"\n*{s['text']}*")
+            elif s["type"] == "paragraph":
+                preview_parts.append(s["text"][:150] + "…")
+        keyboard = {"inline_keyboard": [
+            [{"text": "✅ Публікувати на сайт + TG", "callback_data": "case_pub"}],
+            [{"text": "✏️ Переписати ще",            "callback_data": "case_rewrite"}],
+            [{"text": "❌ Скасувати",                 "callback_data": "case_cancel"}],
+        ]}
+        send(token, chat_id, "\n".join(preview_parts), keyboard=keyboard)
+        return
+
+    # ── Interview questions ──
+    if not isinstance(step, int):
+        return
+
+    key = CASE_QUESTIONS[step][0]
+    with _lock:
+        _case_state[str(chat_id)]["answers"][key] = text
+
+    next_step = step + 1
+
+    if next_step < len(CASE_QUESTIONS):
+        with _lock:
+            _case_state[str(chat_id)]["step"] = next_step
+        send(token, chat_id, CASE_QUESTIONS[next_step][1])
+    else:
+        # All questions answered — generate plan
+        with _lock:
+            answers = _case_state[str(chat_id)]["answers"]
+            _case_state[str(chat_id)]["step"] = "plan_review"
+
+        send(token, chat_id, "✅ Всі відповіді зібрані!\n\n⏳ Генерую план кейсу через Claude…")
+        try:
+            plan = generate_case_plan(api_key, answers)
+        except Exception as e:
+            send(token, chat_id, f"❌ Помилка Claude: {e}\nСпробуй /newcase знову."); return
+
+        with _lock:
+            _case_state[str(chat_id)]["plan"] = plan
+
+        _send_plan_for_approval(token, chat_id, plan)
+
+
+def _send_plan_for_approval(token, chat_id, plan):
+    """Надсилає план кейсу на затвердження."""
+    sections_text = "\n".join(
+        f"  • {s['title']}"
+        for s in plan.get("sections", [])
+    )
+    keyboard = {"inline_keyboard": [
+        [{"text": "✅ Затвердити план", "callback_data": "case_plan_ok"}],
+        [{"text": "✏️ Змінити план",   "callback_data": "case_plan_edit"}],
+        [{"text": "❌ Скасувати",       "callback_data": "case_plan_cancel"}],
+    ]}
+    send(token, chat_id,
+        f"*📋 ПЛАН КЕЙСУ*\n\n"
+        f"*Заголовок:*\n{plan.get('h1', '?')}\n\n"
+        f"*SEO slug:* `{plan.get('seo_slug', '?')}`\n\n"
+        f"*Опис:*\n_{plan.get('seo_description', '?')}_\n\n"
+        f"*Структура:*\n{sections_text}\n\n"
+        f"*Ілюстрація:* _{plan.get('illustration_scene', '?')}_\n\n"
+        f"Затвердити план → пишу статтю + генерую ілюстрацію одночасно.",
+        keyboard=keyboard)
 
 
 def _save_draft(token, notion_token, db_ids, chat_id, text):
