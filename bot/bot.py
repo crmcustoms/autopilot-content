@@ -1119,7 +1119,7 @@ def _handle_case_input(token, notion_token, env, chat_id, text, state):
             f"Розділи: {json.dumps([s['title'] for s in plan.get('sections', [])], ensure_ascii=False)}\n\n"
             f"ПОБАЖАННЯ: {text}\n\n"
             f"Поверни оновлений JSON того ж формату що і раніше (тільки JSON):\n"
-            f"{{\"h1\":\"...\",\"seo_title\":\"...\",\"seo_description\":\"...\",\"seo_slug\":\"...\",\"illustration_scene\":\"...\",\"sections\":[{{\"title\":\"...\",\"points\":[\"...\"]}}}]}}"
+            f"{{\"h1\":\"...\",\"seo_title\":\"...\",\"seo_description\":\"...\",\"seo_slug\":\"...\",\"illustration_scene\":\"...\",\"sections\":[{{\"title\":\"...\",\"points\":[\"...\"]}}]}}"
         )
         try:
             raw = call_claude(api_key, prompt, max_tokens=1200)
